@@ -7,6 +7,7 @@ from typing import Any
 from app.core.clock import Clock, SystemClock, from_storage, to_storage
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.database import get_connection, transaction
+from app.temple.ledger.service import FundLedgerService
 from app.temple.repository import TempleRepository
 from app.temple.schema import ensure_temple_schema
 
@@ -108,10 +109,29 @@ class TempleRestorationService:
         if restoration_campaign["state"] not in {"running", "paused"}:
             raise ConflictError("当前发布活动状态不能完成")
         now = to_storage(self.clock.now())
+        ledger = FundLedgerService(self.connection, self.clock)
         with transaction(immediate=True) as connection:
             connection.execute("UPDATE restoration_campaigns SET state='completed',ends_at=COALESCE(ends_at,?),updated_at=? WHERE id=?", (now, now, restoration_campaign_id))
             connection.execute("UPDATE restoration_targets SET state='completed',completed_at=?,version=version+1 WHERE restoration_campaign_id=? AND state IN ('active','paused')", (now, restoration_campaign_id))
-            self._event(connection, "restoration_campaign", restoration_campaign_id, "completed", actor, {"reason": reason}, now)
+            released = ledger.release_campaign_budget(
+                restoration_campaign_id, actor, f"修缮计划完成，释放未使用预算：{reason}", connection
+            )
+            self._event(connection, "restoration_campaign", restoration_campaign_id, "completed", actor, {"reason": reason, "released_ledger_entries": released}, now)
+            return self.restoration_campaign_detail(restoration_campaign_id, connection)
+
+    def cancel_restoration_campaign(self, restoration_campaign_id: int, actor: str, reason: str) -> dict[str, Any]:
+        restoration_campaign = self._restoration_campaign(restoration_campaign_id)
+        if restoration_campaign["state"] in {"completed", "cancelled"}:
+            raise ConflictError("已结束的发布活动不能取消")
+        now = to_storage(self.clock.now())
+        ledger = FundLedgerService(self.connection, self.clock)
+        with transaction(immediate=True) as connection:
+            connection.execute("UPDATE restoration_campaigns SET state='cancelled',ends_at=COALESCE(ends_at,?),updated_at=? WHERE id=?", (now, now, restoration_campaign_id))
+            connection.execute("UPDATE restoration_targets SET state='failed',last_error=?,version=version+1 WHERE restoration_campaign_id=? AND state IN ('pending','active','paused')", (reason, restoration_campaign_id))
+            released = ledger.release_campaign_budget(
+                restoration_campaign_id, actor, f"修缮计划取消，释放未使用预算：{reason}", connection
+            )
+            self._event(connection, "restoration_campaign", restoration_campaign_id, "cancelled", actor, {"reason": reason, "released_ledger_entries": released}, now)
             return self.restoration_campaign_detail(restoration_campaign_id, connection)
 
     def create_closure(self, payload: dict[str, Any]) -> dict[str, Any]:

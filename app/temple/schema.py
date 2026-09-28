@@ -199,6 +199,94 @@ CREATE TABLE IF NOT EXISTS restoration_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_restoration_events_resource ON restoration_events(resource_type,resource_id,id);
+CREATE TABLE IF NOT EXISTS fund_purposes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_type TEXT NOT NULL CHECK(scope_type IN ('temple','hall','campaign','general')),
+    temple_id INTEGER REFERENCES temple_sites(id),
+    scope_id INTEGER NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','closed')),
+    created_at TEXT NOT NULL,
+    UNIQUE(scope_type, scope_id)
+);
+CREATE TABLE IF NOT EXISTS donation_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    code TEXT NOT NULL UNIQUE,
+    donor_key_hash TEXT NOT NULL,
+    donor_label TEXT NOT NULL,
+    anonymous INTEGER NOT NULL DEFAULT 1 CHECK(anonymous IN (0,1)),
+    gross_amount_cents INTEGER NOT NULL CHECK(gross_amount_cents > 0),
+    reversed_amount_cents INTEGER NOT NULL DEFAULT 0 CHECK(reversed_amount_cents >= 0),
+    state TEXT NOT NULL DEFAULT 'posted' CHECK(state IN ('posted','reversed')),
+    external_reference TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_donation_batches_donor ON donation_batches(donor_key_hash,id);
+CREATE TABLE IF NOT EXISTS donation_designations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES donation_batches(id) ON DELETE CASCADE,
+    purpose_id INTEGER NOT NULL REFERENCES fund_purposes(id),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    reversed_amount_cents INTEGER NOT NULL DEFAULT 0 CHECK(reversed_amount_cents >= 0),
+    ordinal INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_designations_purpose ON donation_designations(purpose_id,batch_id);
+CREATE TABLE IF NOT EXISTS ledger_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purpose_id INTEGER NOT NULL REFERENCES fund_purposes(id),
+    batch_id INTEGER REFERENCES donation_batches(id),
+    event_type TEXT NOT NULL CHECK(event_type IN (
+        'donation_in','donation_reversal','reservation_hold','reservation_release',
+        'expenditure','transfer_out','transfer_in'
+    )),
+    direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents >= 0),
+    balance_delta_cents INTEGER NOT NULL,
+    committed_delta_cents INTEGER NOT NULL,
+    related_entry_id INTEGER REFERENCES ledger_entries(id),
+    campaign_id INTEGER REFERENCES restoration_campaigns(id),
+    transfer_request_id INTEGER,
+    actor TEXT NOT NULL,
+    memo TEXT NOT NULL DEFAULT '',
+    allocation_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_purpose_time ON ledger_entries(purpose_id,id);
+CREATE INDEX IF NOT EXISTS idx_ledger_campaign ON ledger_entries(campaign_id,id);
+CREATE INDEX IF NOT EXISTS idx_ledger_related ON ledger_entries(related_entry_id);
+CREATE TABLE IF NOT EXISTS fund_transfer_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    source_purpose_id INTEGER NOT NULL REFERENCES fund_purposes(id),
+    target_purpose_id INTEGER NOT NULL REFERENCES fund_purposes(id),
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','approved','rejected')),
+    requested_by TEXT NOT NULL,
+    requested_by_user_id INTEGER NOT NULL REFERENCES users(id),
+    approved_by TEXT,
+    credential_hash TEXT NOT NULL DEFAULT '',
+    reject_reason TEXT NOT NULL DEFAULT '',
+    out_entry_id INTEGER REFERENCES ledger_entries(id),
+    in_entry_id INTEGER REFERENCES ledger_entries(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    approved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_transfers_state ON fund_transfer_requests(source_purpose_id,state);
+CREATE TABLE IF NOT EXISTS ledger_credential_records (
+    credential_hash TEXT NOT NULL PRIMARY KEY,
+    scope TEXT NOT NULL,
+    ref_type TEXT NOT NULL,
+    ref_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
 '''
 
 
