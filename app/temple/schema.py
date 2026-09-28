@@ -199,6 +199,119 @@ CREATE TABLE IF NOT EXISTS restoration_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_restoration_events_resource ON restoration_events(resource_type,resource_id,id);
+CREATE TABLE IF NOT EXISTS restoration_funds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    temple_id INTEGER NOT NULL REFERENCES temple_sites(id),
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    restriction_type TEXT NOT NULL CHECK(restriction_type IN ('hall','component','unrestricted')),
+    hall_id INTEGER REFERENCES worship_halls(id),
+    component_code TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','closed')),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_restoration_funds_temple ON restoration_funds(temple_id,state);
+CREATE TABLE IF NOT EXISTS donation_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fund_id INTEGER NOT NULL REFERENCES restoration_funds(id),
+    batch_code TEXT NOT NULL UNIQUE,
+    receipt_no TEXT NOT NULL UNIQUE,
+    donor_hash TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT '',
+    amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+    reversed_minor INTEGER NOT NULL DEFAULT 0 CHECK(reversed_minor >= 0),
+    received_at TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'recorded' CHECK(state IN ('recorded','reversed')),
+    note TEXT NOT NULL DEFAULT '',
+    recorded_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK(reversed_minor <= amount_minor)
+);
+CREATE INDEX IF NOT EXISTS idx_donation_batches_fund ON donation_batches(fund_id,received_at,id);
+CREATE TABLE IF NOT EXISTS budget_commitments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES restoration_campaigns(id),
+    fund_id INTEGER NOT NULL REFERENCES restoration_funds(id),
+    code TEXT NOT NULL UNIQUE,
+    amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+    spent_minor INTEGER NOT NULL DEFAULT 0 CHECK(spent_minor >= 0),
+    released_minor INTEGER NOT NULL DEFAULT 0 CHECK(released_minor >= 0),
+    state TEXT NOT NULL DEFAULT 'held' CHECK(state IN ('held','partially_settled','settled','released')),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(spent_minor + released_minor <= amount_minor)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_commitments_campaign ON budget_commitments(campaign_id,state);
+CREATE TABLE IF NOT EXISTS fund_ledger_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fund_id INTEGER NOT NULL REFERENCES restoration_funds(id),
+    entry_type TEXT NOT NULL CHECK(entry_type IN ('donation','reversal','commitment','commitment_release','expenditure','transfer_in','transfer_out')),
+    amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+    command_key TEXT,
+    donation_batch_id INTEGER REFERENCES donation_batches(id),
+    commitment_id INTEGER REFERENCES budget_commitments(id),
+    counterparty_fund_id INTEGER REFERENCES restoration_funds(id),
+    transfer_group_code TEXT,
+    linked_entry_id INTEGER REFERENCES fund_ledger_entries(id),
+    campaign_id INTEGER REFERENCES restoration_campaigns(id),
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_ledger_command ON fund_ledger_entries(command_key) WHERE command_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fund_ledger_fund_time ON fund_ledger_entries(fund_id,created_at,id);
+CREATE INDEX IF NOT EXISTS idx_fund_ledger_commitment ON fund_ledger_entries(commitment_id,id);
+CREATE TABLE IF NOT EXISTS fund_source_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ledger_entry_id INTEGER NOT NULL REFERENCES fund_ledger_entries(id) ON DELETE CASCADE,
+    donation_batch_id INTEGER REFERENCES donation_batches(id),
+    source_entry_id INTEGER REFERENCES fund_ledger_entries(id),
+    amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+    CHECK(donation_batch_id IS NOT NULL OR source_entry_id IS NOT NULL),
+    UNIQUE(ledger_entry_id, donation_batch_id, source_entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_source_allocations_batch ON fund_source_allocations(donation_batch_id);
+CREATE INDEX IF NOT EXISTS idx_source_allocations_entry ON fund_source_allocations(source_entry_id);
+CREATE TABLE IF NOT EXISTS fund_transfer_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    command_key TEXT NOT NULL UNIQUE,
+    from_fund_id INTEGER NOT NULL REFERENCES restoration_funds(id),
+    to_fund_id INTEGER NOT NULL REFERENCES restoration_funds(id),
+    amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
+    reason TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'proposed' CHECK(state IN ('proposed','confirmed','rejected')),
+    proposed_by TEXT NOT NULL,
+    required_approver TEXT NOT NULL,
+    confirmed_by TEXT,
+    rejected_by TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    CHECK(from_fund_id <> to_fund_id),
+    CHECK(proposed_by <> required_approver)
+);
+CREATE INDEX IF NOT EXISTS idx_transfer_orders_state ON fund_transfer_orders(state,id);
+CREATE VIEW IF NOT EXISTS fund_ledger_movements AS
+SELECT id, fund_id, entry_type, amount_minor, command_key, donation_batch_id, commitment_id,
+       counterparty_fund_id, transfer_group_code, linked_entry_id, campaign_id, actor, reason, created_at,
+       CASE entry_type
+           WHEN 'donation' THEN amount_minor
+           WHEN 'transfer_in' THEN amount_minor
+           WHEN 'reversal' THEN -amount_minor
+           WHEN 'expenditure' THEN -amount_minor
+           WHEN 'transfer_out' THEN -amount_minor
+           ELSE 0
+       END AS book_delta,
+       CASE entry_type
+           WHEN 'commitment' THEN amount_minor
+           WHEN 'commitment_release' THEN -amount_minor
+           WHEN 'expenditure' THEN -amount_minor
+           ELSE 0
+       END AS committed_delta
+FROM fund_ledger_entries;
 '''
 
 

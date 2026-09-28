@@ -42,6 +42,11 @@ def complete_restoration_campaign(restoration_campaign_id: int, payload: Restora
     return service().complete_restoration_campaign(restoration_campaign_id, payload.actor, payload.reason)
 
 
+@router.post("/restoration_campaigns/{restoration_campaign_id}/cancel")
+def cancel_restoration_campaign(restoration_campaign_id: int, payload: RestorationCampaignAction):
+    return service().cancel_restoration_campaign(restoration_campaign_id, payload.actor, payload.reason)
+
+
 @router.post("/closure", status_code=201)
 def create_closure(payload: ClosureCreate):
     return service().create_closure(payload.model_dump())
